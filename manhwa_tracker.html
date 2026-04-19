@@ -4,23 +4,30 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Manhwa Tracker</title>
-  <script>
-      (function() {
-          const CORRECT = "Mah1@Aaf";
-          const SESSION_KEY = "mt_auth";
-          if (sessionStorage.getItem(SESSION_KEY) !== "1") {
-              const pwd = prompt("🔒 Enter password to continue:");
-              if (pwd !== CORRECT) {
-                  document.write("<div style='font-family:sans-serif;background:#121212;color:#e0e0e0;height:100vh;display:flex;align-items:center;justify-content:center;font-size:1.2em;'>❌ Incorrect password.</div>");
-                  throw new Error("Unauthorised");
-              }
-              sessionStorage.setItem(SESSION_KEY, "1");
-          }
-      })();
-  </script>
   <style>
     * { box-sizing: border-box; }
     body { font-family: Arial, sans-serif; background-color: #121212; color: #e0e0e0; margin: 0; padding: 0; }
+
+    #lock-screen {
+        position: fixed; inset: 0; background: #121212;
+        display: flex; align-items: center; justify-content: center;
+        z-index: 99999; flex-direction: column; gap: 16px;
+    }
+    #lock-screen.hidden { display: none; }
+    #lock-box {
+        background: #1e1e1e; border: 1px solid #333; border-radius: 14px;
+        padding: 36px 32px; display: flex; flex-direction: column;
+        align-items: center; gap: 14px; width: 300px;
+        box-shadow: 0 8px 32px rgba(0,0,0,0.7);
+    }
+    #lock-box .lock-icon { font-size: 2.2em; }
+    #lock-box h2 { margin: 0; font-size: 0.85em; color: #888; text-transform: uppercase; letter-spacing: 2px; }
+    #lock-pwd { width: 100%; background: #252525; border: 1px solid #444; color: #e0e0e0; padding: 10px 14px; border-radius: 8px; font-size: 1em; text-align: center; letter-spacing: 2px; }
+    #lock-pwd:focus { outline: none; border-color: #76c7c0; }
+    #lock-btn { width: 100%; padding: 11px; background: #76c7c0; color: #121212; border: none; border-radius: 8px; font-size: 0.95em; font-weight: 700; cursor: pointer; letter-spacing: 1px; }
+    #lock-btn:hover { background: #5db3ac; }
+    #lock-error { font-size: 0.8em; color: #c0504d; min-height: 1.2em; }
+    #app { display: none; }
 
     #sync-status { position: fixed; bottom: 16px; right: 16px; background: #1e1e1e; border: 1px solid #333; border-radius: 8px; padding: 6px 12px; font-size: 0.75em; color: #666; z-index: 9999; transition: all 0.3s; }
     #sync-status.syncing { color: #76c7c0; border-color: #76c7c0; }
@@ -47,6 +54,19 @@
 </head>
 <body>
 
+<!-- Lock screen -->
+<div id="lock-screen">
+    <div id="lock-box">
+        <div class="lock-icon">🔒</div>
+        <h2>Manhwa Tracker</h2>
+        <input type="password" id="lock-pwd" placeholder="Enter password" onkeydown="if(event.key==='Enter') unlock()">
+        <button id="lock-btn" onclick="unlock()">Unlock</button>
+        <div id="lock-error"></div>
+    </div>
+</div>
+
+<!-- App — hidden until unlocked -->
+<div id="app">
 <div id="sync-status">⏳ Connecting…</div>
 
 <header>
@@ -198,34 +218,32 @@ function renderTable() {
         const originSelect=document.createElement('select');
         originSelect.innerHTML=`<option value="">U</option><option value="K">K</option><option value="C">C</option><option value="J">J</option>`;
         originSelect.value=entry.origin||"";
-        originSelect.addEventListener('change',()=>updateField(entry.id,'origin',originSelect.value));
+        originSelect.addEventListener('change',()=>updateField(entry.id,'origin',originSelect.value,false));
         originCell.appendChild(originSelect); row.appendChild(originCell);
 
-        // Genre
+        // Genre — save on blur (when you leave the field), not while typing
         const genreCell=document.createElement('td');
         const genreInput=document.createElement('input'); genreInput.type="text"; genreInput.setAttribute('list','genre-suggestions'); genreInput.value=entry.genre||"";
-        let genreTimer;
-        genreInput.addEventListener('input',()=>{ clearTimeout(genreTimer); genreTimer=setTimeout(()=>{ updateField(entry.id,'genre',genreInput.value); updateGenreFilter(); },800); });
+        genreInput.addEventListener('blur',()=>{ updateField(entry.id,'genre',genreInput.value,false); updateGenreFilter(); });
         genreCell.appendChild(genreInput); row.appendChild(genreCell);
 
         // Status
         const statusCell=document.createElement('td');
         const statusSelect=document.createElement('select');
         ["Ongoing","Completed","Hiatus","Plan to Read"].forEach(opt=>{ const o=document.createElement('option'); o.value=opt; o.textContent=opt; if(entry.status===opt) o.selected=true; statusSelect.appendChild(o); });
-        statusSelect.addEventListener('change',()=>updateField(entry.id,'status',statusSelect.value));
+        statusSelect.addEventListener('change',()=>updateField(entry.id,'status',statusSelect.value,false));
         statusCell.appendChild(statusSelect); row.appendChild(statusCell);
 
-        // Last Episode
+        // Last Episode — save on blur
         const epCell=document.createElement('td');
         const epInput=document.createElement('input'); epInput.type="number"; epInput.value=entry.last_episode||0;
-        let epTimer;
-        epInput.addEventListener('input',()=>{ clearTimeout(epTimer); epTimer=setTimeout(()=>updateField(entry.id,'last_episode',parseInt(epInput.value)||0),800); });
+        epInput.addEventListener('blur',()=>updateField(entry.id,'last_episode',parseInt(epInput.value)||0,false));
         epCell.appendChild(epInput); row.appendChild(epCell);
 
         // Favorite
         const favCell=document.createElement('td');
         const favInput=document.createElement('input'); favInput.type="checkbox"; favInput.checked=entry.favorite||false; favInput.className="fav-checkbox";
-        favInput.addEventListener('change',()=>updateField(entry.id,'favorite',favInput.checked));
+        favInput.addEventListener('change',()=>updateField(entry.id,'favorite',favInput.checked,true));
         favCell.appendChild(favInput); row.appendChild(favCell);
 
         // Delete
@@ -244,12 +262,13 @@ function renderTable() {
 }
 
 // ================================================================
-//  FIELD UPDATE (debounced, fires once per change)
+//  FIELD UPDATE
 // ================================================================
-async function updateField(id, field, value) {
+async function updateField(id, field, value, rerender=false) {
     const entry = data.find(x=>x.id===id); if(!entry) return;
     entry[field] = value;
-    cacheLocally(); renderTable();
+    cacheLocally();
+    if(rerender) renderTable();
     try { await sb.update('manhwa', id, { [field]: value }); }
     catch(e) { syncStatus('error','⚠ Sync failed'); }
 }
@@ -370,6 +389,33 @@ document.getElementById('restore-file').addEventListener('change',async function
 //  INIT
 // ================================================================
 initData();
+
+// ================================================================
+//  LOCK SCREEN
+// ================================================================
+(function() {
+    const CORRECT = "YOURPASSWORD";
+    const SESSION_KEY = "mt_auth";
+    if (sessionStorage.getItem(SESSION_KEY) === "1") {
+        document.getElementById('lock-screen').classList.add('hidden');
+        document.getElementById('app').style.display = 'block';
+    }
+    window.unlock = function() {
+        const val = document.getElementById('lock-pwd').value;
+        if (val === CORRECT) {
+            sessionStorage.setItem(SESSION_KEY, "1");
+            document.getElementById('lock-screen').classList.add('hidden');
+            document.getElementById('app').style.display = 'block';
+        } else {
+            const err = document.getElementById('lock-error');
+            err.textContent = "❌ Incorrect password.";
+            document.getElementById('lock-pwd').value = '';
+            document.getElementById('lock-pwd').focus();
+            setTimeout(() => err.textContent = '', 2000);
+        }
+    };
+})();
 </script>
+</div><!-- end #app -->
 </body>
 </html>
