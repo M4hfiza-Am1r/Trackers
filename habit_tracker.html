@@ -4,23 +4,40 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Habit Tracker</title>
-    <script>
-        (function() {
-            const CORRECT = "Mah1@Aaf";
-            const SESSION_KEY = "ht_auth";
-            if (sessionStorage.getItem(SESSION_KEY) !== "1") {
-                const pwd = prompt("🔒 Enter password to continue:");
-                if (pwd !== CORRECT) {
-                    document.write("<div style='font-family:sans-serif;background:#121212;color:#e0e0e0;height:100vh;display:flex;align-items:center;justify-content:center;font-size:1.2em;'>❌ Incorrect password.</div>");
-                    throw new Error("Unauthorised");
-                }
-                sessionStorage.setItem(SESSION_KEY, "1");
-            }
-        })();
-    </script>
     <style>
         * { box-sizing: border-box; }
         body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #121212; color: #e0e0e0; margin: 0; padding: 20px; line-height: 1.5; }
+
+        /* Lock screen — covers everything until correct password */
+        #lock-screen {
+            position: fixed; inset: 0; background: #121212;
+            display: flex; align-items: center; justify-content: center;
+            z-index: 99999; flex-direction: column; gap: 16px;
+        }
+        #lock-screen.hidden { display: none; }
+        #lock-box {
+            background: #1e1e1e; border: 1px solid #333; border-radius: 14px;
+            padding: 36px 32px; display: flex; flex-direction: column;
+            align-items: center; gap: 14px; width: 300px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.7);
+        }
+        #lock-box .lock-icon { font-size: 2.2em; }
+        #lock-box h2 { margin: 0; font-size: 0.85em; color: #888; text-transform: uppercase; letter-spacing: 2px; }
+        #lock-pwd {
+            width: 100%; background: #252525; border: 1px solid #444;
+            color: #e0e0e0; padding: 10px 14px; border-radius: 8px;
+            font-size: 1em; text-align: center; letter-spacing: 2px;
+        }
+        #lock-pwd:focus { outline: none; border-color: #76c7c0; }
+        #lock-btn {
+            width: 100%; padding: 11px; background: #76c7c0; color: #121212;
+            border: none; border-radius: 8px; font-size: 0.95em;
+            font-weight: 700; cursor: pointer; letter-spacing: 1px;
+        }
+        #lock-btn:hover { background: #5db3ac; }
+        #lock-error { font-size: 0.8em; color: #c0504d; min-height: 1.2em; }
+        /* Hide main content until unlocked */
+        #app { display: none; }
 
         /* ── Sync status indicator ── */
         #sync-status {
@@ -198,6 +215,19 @@
 </head>
 <body>
 
+<!-- Lock screen -->
+<div id="lock-screen">
+    <div id="lock-box">
+        <div class="lock-icon">🔒</div>
+        <h2>Habit Tracker</h2>
+        <input type="password" id="lock-pwd" placeholder="Enter password" onkeydown="if(event.key==='Enter') unlock()">
+        <button id="lock-btn" onclick="unlock()">Unlock</button>
+        <div id="lock-error"></div>
+    </div>
+</div>
+
+<!-- App — hidden until unlocked -->
+<div id="app">
 <div id="sync-status">⏳ Connecting…</div>
 
 <!-- Top nav -->
@@ -421,6 +451,29 @@ function getToday() {
 }
 function isWeekend(ds) { const d=new Date(ds+'T00:00:00'); return d.getDay()===0||d.getDay()===6; }
 
+// Calculate current streak purely from history array — never from a stored number.
+// Counts consecutive days ending today or yesterday (grace for today not yet marked).
+// weekend_mode skips Sat/Sun — a missed weekend day doesn't break the streak.
+function calcStreak(history, weekend_mode) {
+    if (!history || history.length === 0) return 0;
+    const sorted = [...history].sort();
+    const today = getToday();
+    const todayDt = new Date(today+'T00:00:00');
+    const hSet = new Set(sorted);
+    let streak = 0;
+    // Start from today; if today not marked yet, start from yesterday (grace)
+    let cur = new Date(todayDt);
+    if (!hSet.has(today)) cur.setDate(cur.getDate()-1);
+    while (true) {
+        const y=cur.getFullYear(), m=String(cur.getMonth()+1).padStart(2,'0'), d=String(cur.getDate()).padStart(2,'0');
+        const ds=`${y}-${m}-${d}`;
+        if (hSet.has(ds)) { streak++; cur.setDate(cur.getDate()-1); }
+        else if (weekend_mode && isWeekend(ds)) { cur.setDate(cur.getDate()-1); } // skip weekends
+        else break;
+    }
+    return streak;
+}
+
 // ================================================================
 //  HABITS
 // ================================================================
@@ -441,9 +494,11 @@ async function toggleHabit(id, e) {
     const h = habits.find(x=>x.id===id); if (!h) return;
     const today = getToday();
     let history = [...(h.history||[])];
-    if (history.includes(today)) { history = history.filter(d=>d!==today); h.streak = Math.max(0, h.streak-1); }
-    else { history.push(today); h.streak++; if(h.streak > h.high_streak) h.high_streak = h.streak; }
+    if (history.includes(today)) { history = history.filter(d=>d!==today); }
+    else { history.push(today); history.sort(); }
     h.history = history;
+    h.streak = calcStreak(history, h.weekend_mode);
+    if (h.streak > h.high_streak) h.high_streak = h.streak;
     render();
     try { await sb.update('habits', id, { history, streak: h.streak, high_streak: h.high_streak }); cacheLocally(); }
     catch(e) { syncStatus('error','⚠ Sync failed'); }
@@ -515,13 +570,25 @@ async function deleteTodo(id) {
 
 function renderTodos() {
     const el = document.getElementById('todo-list'); if (!el) return;
-    if (todos.length === 0) { el.innerHTML=`<div style="font-size:0.82em;color:#555;text-align:center;padding:16px 0;">No tasks yet. Add one above.</div>`; return; }
-    el.innerHTML = todos.map(t=>`
-        <div class="todo-item ${t.done?'done-todo':''}">
-            <input type="checkbox" ${t.done?'checked':''} onclick="toggleTodo('${t.id}')">
-            <span class="todo-text">${t.text}</span>
-            <button class="todo-del-btn" onclick="deleteTodo('${t.id}')" title="Delete">×</button>
-        </div>`).join('');
+    if (todos.length === 0) {
+        el.innerHTML = '<div style="font-size:0.82em;color:#555;text-align:center;padding:16px 0;">No tasks yet. Add one above.</div>';
+        return;
+    }
+    el.innerHTML = '';
+    todos.forEach(t => {
+        const div = document.createElement('div');
+        div.className = 'todo-item' + (t.done ? ' done-todo' : '');
+        const cb = document.createElement('input');
+        cb.type = 'checkbox'; cb.checked = !!t.done;
+        cb.addEventListener('change', () => toggleTodo(t.id));
+        const span = document.createElement('span');
+        span.className = 'todo-text'; span.textContent = t.text;
+        const btn = document.createElement('button');
+        btn.className = 'todo-del-btn'; btn.title = 'Delete'; btn.textContent = 'x';
+        btn.addEventListener('click', () => deleteTodo(t.id));
+        div.appendChild(cb); div.appendChild(span); div.appendChild(btn);
+        el.appendChild(div);
+    });
 }
 
 // ================================================================
@@ -623,50 +690,119 @@ function calPrevMonth(){calViewMonth--;if(calViewMonth<0){calViewMonth=11;calVie
 function calNextMonth(){calViewMonth++;if(calViewMonth>11){calViewMonth=0;calViewYear++;}renderCalendar(habits[selectedHabitIndex]||null);renderWeekStreak(habits[selectedHabitIndex]||null);}
 
 function renderCalendar(habit) {
-    const todayStr=getToday(),todayDt=new Date(todayStr+'T00:00:00');
-    const yr=calViewYear,mo=calViewMonth;
+    const todayStr=getToday(), todayDt=new Date(todayStr+'T00:00:00');
+    const yr=calViewYear, mo=calViewMonth;
     const MN=["January","February","March","April","May","June","July","August","September","October","November","December"];
     const DN=["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
     const firstDow=new Date(yr,mo,1).getDay();
     const dim=new Date(yr,mo+1,0).getDate();
     const hSet=new Set(habit?habit.history:[]);
+
+    // Build nav + header via innerHTML (no clicks here)
     let html=`<div class="cal-nav"><div class="cal-nav-btn" onclick="calPrevMonth()">&#8249;</div><span class="cal-month-label">${MN[mo]} ${yr}</span><div class="cal-nav-btn" onclick="calNextMonth()">&#8250;</div></div><div class="cal-grid-header">`;
     DN.forEach(d=>{html+=`<div class="cal-day-name">${d}</div>`;});
-    html+=`</div><div class="cal-grid">`;
-    for(let e=0;e<firstDow;e++) html+=`<div class="cal-cell empty"></div>`;
+    html+=`</div>`;
+    document.getElementById('calendar-wrapper').innerHTML=html;
+
+    // Build grid with DOM elements so we can attach real event listeners
+    const grid=document.createElement('div'); grid.className='cal-grid';
+    for(let e=0;e<firstDow;e++){const empty=document.createElement('div');empty.className='cal-cell empty';grid.appendChild(empty);}
+
     for(let day=1;day<=dim;day++){
         const ds=`${yr}-${String(mo+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
         const dt=new Date(ds+'T00:00:00');
-        const done=hSet.has(ds),isToday=(ds===todayStr),isFuture=(dt>todayDt);
+        const done=hSet.has(ds), isToday=(ds===todayStr), isFuture=(dt>todayDt);
         const isWknd=habit&&habit.weekend_mode&&isWeekend(ds);
         const col=(firstDow+day-1)%7;
         const prevDs=day>1?`${yr}-${String(mo+1).padStart(2,'0')}-${String(day-1).padStart(2,'0')}`:null;
         const nextDs=day<dim?`${yr}-${String(mo+1).padStart(2,'0')}-${String(day+1).padStart(2,'0')}`:null;
         const sL=done&&prevDs&&hSet.has(prevDs)&&col!==0;
         const sR=done&&nextDs&&hSet.has(nextDs)&&col!==6;
+
         let cls='cal-cell';
         if(done)cls+=' done'; if(sL)cls+=' streak-left'; if(sR)cls+=' streak-right';
         if(isToday)cls+=' today'; if(isFuture)cls+=' future'; if(isWknd&&!done)cls+=' weekend-skip';
-        html+=`<div class="${cls}" title="${ds}"><div class="cal-cell-inner"><span class="cal-num">${day}</span>${done?'<span class="cal-bolt">⚡</span>':''}</div></div>`;
+
+        const cell=document.createElement('div'); cell.className=cls; cell.title=ds;
+        cell.innerHTML=`<div class="cal-cell-inner"><span class="cal-num">${day}</span>${done?'<span class="cal-bolt">⚡</span>':''}</div>`;
+
+        // Allow clicking any non-future day to toggle the check-in
+        if(!isFuture && habit) {
+            cell.style.cursor='pointer';
+            cell.addEventListener('click', () => toggleCalendarDay(habit.id, ds));
+        }
+        grid.appendChild(cell);
     }
-    html+=`</div>`;
-    document.getElementById('calendar-wrapper').innerHTML=html;
+    document.getElementById('calendar-wrapper').appendChild(grid);
+}
+
+// Toggle a specific date in a habit's history (past or today)
+async function toggleCalendarDay(habitId, dateStr) {
+    const h = habits.find(x=>x.id===habitId); if(!h) return;
+    let history = [...(h.history||[])];
+    if (history.includes(dateStr)) { history = history.filter(d=>d!==dateStr); }
+    else { history.push(dateStr); history.sort(); }
+    h.history = history;
+    h.streak = calcStreak(history, h.weekend_mode);
+    if (h.streak > h.high_streak) h.high_streak = h.streak;
+    render();
+    try { await sb.update('habits', habitId, { history, streak: h.streak, high_streak: h.high_streak }); cacheLocally(); }
+    catch(e) { syncStatus('error','⚠ Sync failed'); }
 }
 
 function renderWeekStreak(habit) {
-    const yr=calViewYear,mo=calViewMonth;
-    const hSet=new Set(habit?habit.history:[]);
+    const hSet = new Set(habit ? habit.history : []);
+    const todayStr = getToday();
+    const todayDt = new Date(todayStr+'T00:00:00');
+
+    // ── Sidebar dots: weeks in the VIEWED month ──
+    const yr=calViewYear, mo=calViewMonth;
     const dim=new Date(yr,mo+1,0).getDate();
     const firstDow=new Date(yr,mo,1).getDay();
-    const todayDt=new Date(getToday()+'T00:00:00');
-    let weeks=[],week=[];
+    let weeks=[], week=[];
     for(let p=0;p<firstDow;p++) week.push(null);
     for(let d=1;d<=dim;d++){ week.push(d); if(week.length===7){weeks.push(week);week=[];} }
     if(week.length>0) weeks.push(week);
-    let wsc=0;
-    const wrs=weeks.map(wk=>{ const active=wk.filter(d=>d!==null).map(d=>({d,dt:new Date(yr,mo,d)})).filter(({dt})=>dt<=todayDt); if(active.length===0)return null; const had=active.some(({d})=>hSet.has(`${yr}-${String(mo+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`)); if(had)wsc++; return had; });
-    document.getElementById('week-streak-dots').innerHTML=wrs.map(wr=>`<div class="week-dot-row"><div class="week-dot ${wr===null?'future-dot':wr?'has-streak':'no-streak'}">${wr?'🔥':''}</div></div>`).join('');
-    document.getElementById('streak-footer').innerHTML=`🔥 <strong>${wsc} Week${wsc!==1?'s':''}</strong> Active Streak`;
+    const wrs=weeks.map(wk=>{
+        const active=wk.filter(d=>d!==null).map(d=>({d,dt:new Date(yr,mo,d)})).filter(({dt})=>dt<=todayDt);
+        if(active.length===0) return null;
+        return active.some(({d})=>hSet.has(`${yr}-${String(mo+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`));
+    });
+    document.getElementById('week-streak-dots').innerHTML=wrs.map(wr=>
+        `<div class="week-dot-row"><div class="week-dot ${wr===null?'future-dot':wr?'has-streak':'no-streak'}">${wr?'🔥':''}</div></div>`
+    ).join('');
+
+    // ── Footer: TRUE continuous week streak across ALL history ──
+    // Get Sunday-based week-start (matching the calendar's Sun–Sat layout)
+    function getWeekStart(dateStr) {
+        const d = new Date(dateStr+'T00:00:00');
+        const day = d.getDay(); // 0=Sun
+        const mon = new Date(d); mon.setDate(d.getDate() - day); // back to Sunday
+        const y=mon.getFullYear(), m=String(mon.getMonth()+1).padStart(2,'0'), dd=String(mon.getDate()).padStart(2,'0');
+        return `${y}-${m}-${dd}`;
+    }
+
+    // Collect all weeks that have at least one check-in
+    const activeWeeks = new Set();
+    hSet.forEach(ds => activeWeeks.add(getWeekStart(ds)));
+
+    // Walk backwards from today's week, counting consecutive active weeks
+    const thisWeek = getWeekStart(todayStr);
+    let streak = 0;
+    let cur = new Date(thisWeek+'T00:00:00');
+
+    // If this week has no entry yet, start checking from last week (grace for current week)
+    if(!activeWeeks.has(thisWeek)) cur.setDate(cur.getDate()-7);
+
+    while(true) {
+        const y=cur.getFullYear(), m=String(cur.getMonth()+1).padStart(2,'0'), d=String(cur.getDate()).padStart(2,'0');
+        const ws=`${y}-${m}-${d}`;
+        if(activeWeeks.has(ws)) { streak++; cur.setDate(cur.getDate()-7); }
+        else break;
+    }
+
+    document.getElementById('streak-footer').innerHTML=
+        `🔥 <strong>${streak} Week${streak!==1?'s':''}</strong> Active Streak`;
 }
 
 // ================================================================
@@ -680,10 +816,8 @@ function render() {
     list.innerHTML=refCont.innerHTML=summary.innerHTML='';
     let doneToday=0;
 
-    // streak reset check
-    const y=new Date(); y.setDate(y.getDate()-1);
-    const yStr=`${y.getFullYear()}-${String(y.getMonth()+1).padStart(2,'0')}-${String(y.getDate()).padStart(2,'0')}`;
-    habits.forEach(h=>{ const hist=h.history||[]; if(hist.length>0){const last=hist[hist.length-1]; if(last!==today&&last!==yStr&&!(h.weekend_mode&&isWeekend(yStr))) h.streak=0; } });
+    // Recalculate streak from history every render — never relies on stored number
+    habits.forEach(h=>{ h.streak = calcStreak(h.history, h.weekend_mode); if(h.streak > h.high_streak) h.high_streak = h.streak; });
 
     habits.forEach((h,i)=>{
         const isDone=(h.history||[]).includes(today);
@@ -771,6 +905,33 @@ function downloadReport() {
 // ================================================================
 const _n=new Date(); calViewYear=_n.getFullYear(); calViewMonth=_n.getMonth();
 loadTracks(); updatePomoDisplay(); initData();
+
+// ================================================================
+//  LOCK SCREEN
+// ================================================================
+(function() {
+    const CORRECT = "Mah1@Aaf";
+    const SESSION_KEY = "ht_auth";
+    if (sessionStorage.getItem(SESSION_KEY) === "1") {
+        document.getElementById('lock-screen').classList.add('hidden');
+        document.getElementById('app').style.display = 'block';
+    }
+    window.unlock = function() {
+        const val = document.getElementById('lock-pwd').value;
+        if (val === CORRECT) {
+            sessionStorage.setItem(SESSION_KEY, "1");
+            document.getElementById('lock-screen').classList.add('hidden');
+            document.getElementById('app').style.display = 'block';
+        } else {
+            const err = document.getElementById('lock-error');
+            err.textContent = "❌ Incorrect password.";
+            document.getElementById('lock-pwd').value = '';
+            document.getElementById('lock-pwd').focus();
+            setTimeout(() => err.textContent = '', 2000);
+        }
+    };
+})();
 </script>
+</div><!-- end #app -->
 </body>
 </html>
